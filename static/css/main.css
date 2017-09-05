@@ -50,3 +50,7 @@ canvas {
 .item {
     display: block;
 }
+
+.hidden {
+    display: none;
+}

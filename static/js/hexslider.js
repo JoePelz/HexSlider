@@ -66,6 +66,7 @@ const grid_max_y = 4;
 const edge_len = 115.47;
 const half_edge_len = edge_len / 2;
 const tri_height = Math.sqrt(edge_len*edge_len*3/4);
+const seed = Math.random();
 
 const r = 300; //circumscribed hexagonal playing field radius (distance from center to middle of edge, not center to corner)
 const e = 100; //triangle height; should evenly divide `r`
@@ -74,10 +75,11 @@ const s = r * Math.tan(Math.PI/6); //half of a side length (for larger game hexa
 const t = 2*s*e / r; //triangle edge length
 
 let DEBUG_FLAGS = {
-    'tracking': false,
-    'tiling': false,
-    'paused': false,
-    'path_markers': true,
+    "tracking": false,
+    "tiling": false,
+    "paused": false,
+    "path_markers": true,
+    "special_pieces": false,
 }
 
 var time_old = -1;
@@ -152,9 +154,13 @@ function init() {
     p1 = new Player();
     p1.keyLeft = 'A'.charCodeAt();  //a=65; d=68;
     p1.keyRight = 'D'.charCodeAt();
+    p1.id=1;
+    p1.image = document.getElementById("piece" + (Math.round(p1.id * seed * 1000) % 6 + 1));
     p2 = new Player();
     p2.keyLeft = KEY_CODE.Arrow_Left;  //<=37; >=39;
     p2.keyRight = KEY_CODE.Arrow_Right;
+    p2.id=2;
+    p2.image = document.getElementById("piece" + (Math.round(p2.id * seed * 1000) % 6 + 1));
     p_default = new Player();
     p1.endVertex = new Point(-2, 0);
     p1.setTrajectory(0);
@@ -639,15 +645,30 @@ function renderTrianglesWithinRhombus(context) {
 function renderPlayer(player, context) {
     var pos = player.screenCoord;
     context.translate(pos.x, pos.y);
-    //context.rotate(-Math.PI / 4);
-    context.rotate((4*Math.PI*player.trajectory - 3*Math.PI) / 12);
-    context.beginPath();
-    context.arc(0, 0, player.radius, 0, 2 * Math.PI, false);
-    context.lineTo(player.radius*1.5, player.radius*1.5);
-    context.lineTo(0, player.radius);
-    context.stroke();
-    //context.rotate(Math.PI / 4);
-    context.rotate((-4*Math.PI*player.trajectory + 3*Math.PI) / 12);
+    if (DEBUG_FLAGS.special_pieces) {
+        let img = player.image;
+        if (player.trajectory < 2 || player.trajectory == 5) {
+            context.rotate(2 * Math.PI * (player.trajectory+3) / 6);
+            context.scale(0.25, 0.25);
+            context.drawImage(img, -img.width / 2, -img.height / 2, img.width, img.height);
+            context.scale(4, 4);
+            context.rotate(-2 * Math.PI * (player.trajectory+3) / 6);
+        } else {
+            context.rotate(2 * Math.PI * (player.trajectory+3) / 6);
+            context.scale(0.25, -0.25);
+            context.drawImage(img, -img.width / 2, -img.height / 2, img.width, img.height);
+            context.scale(4, -4);
+            context.rotate(-2 * Math.PI * (player.trajectory+3) / 6);
+        }
+    } else {
+        context.rotate((4*Math.PI*player.trajectory - 3*Math.PI) / 12);
+        context.beginPath();
+        context.arc(0, 0, player.radius, 0, 2 * Math.PI, false);
+        context.lineTo(player.radius*1.5, player.radius*1.5);
+        context.lineTo(0, player.radius);
+        context.stroke();
+        context.rotate((-4*Math.PI*player.trajectory + 3*Math.PI) / 12);
+    }
     context.translate(-pos.x, -pos.y);
 
     //@TEST CODE marks the start and end vertices that player is lerping on
