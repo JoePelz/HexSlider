@@ -56,11 +56,6 @@ function toNearestGridPoint(sc) {
     return gc;
 }
 
-var lcanvas;
-var rcanvas;
-var lctx;
-var rctx;
-
 const grid_max_x = 4;
 const grid_max_y = 4;
 const edge_len = 115.47;
@@ -82,13 +77,14 @@ let DEBUG_FLAGS = {
 
 var time_old = -1;
 
-var p1 = {};
-var p2 = {};
 var p_default = {};
 var gameSpeed = 0.1;
 
 var testPoint = new Point(-1000, -1000);
 
+// Noteworthy elements of context objects: canvas, bgColor, targetPlayer
+var contexts = [];
+var players = [];
 var candies = [];
 var walls = [];
 var particles = [];
@@ -110,10 +106,10 @@ const KEY_CODE = {
 if (Object.freeze) Object.freeze(KEY_CODE);
 
 function onResize() {
-    lcanvas.width = window.innerWidth * 0.48;
-    lcanvas.height = window.innerHeight * 0.96;
-    rcanvas.width = window.innerWidth * 0.48;
-    rcanvas.height = window.innerHeight * 0.96;
+    contexts.forEach(function (ctx) {
+        ctx.canvas.width = window.innerWidth * 0.48;
+        ctx.canvas.height = window.innerHeight * 0.96;
+    });
 }
 
 (function () {
@@ -140,21 +136,15 @@ window.addEventListener("optimizedResize", onResize);
 
 
 function init() {
-    lcanvas = document.getElementById("left");
-    rcanvas = document.getElementById("right");
-    lctx = lcanvas.getContext("2d");
-    rctx = rcanvas.getContext("2d");
 
-    candies.push(new Candy(generate_random_vertex()));
-    candies.push(new Candy(generate_random_vertex()));
-    candies.push(new Candy(generate_random_vertex()));
-
-    p1 = new Player();
+    var p1 = new Player();
     p1.keyLeft = 'A'.charCodeAt();  //a=65; d=68;
     p1.keyRight = 'D'.charCodeAt();
-    p2 = new Player();
+    p1.color = "#0000FF";
+    var p2 = new Player();
     p2.keyLeft = KEY_CODE.Arrow_Left;  //<=37; >=39;
     p2.keyRight = KEY_CODE.Arrow_Right;
+    p2.color = "#FF0000";
     p_default = new Player();
     p1.endVertex = new Point(-2, 0);
     p1.setTrajectory(0);
@@ -162,12 +152,25 @@ function init() {
     p2.endVertex = new Point(2, 0);
     p2.setTrajectory(3);
     p2.step(0);
-    //p1.path = new Line(-2 * s, 0, -2 * s + t, 0);
-    //p2.path = new Line(2 * s, 0, 2 * s - t, 0);
+    players.push(p1);
+    players.push(p2);
+    
+    
+    contexts.push(document.getElementById("left").getContext("2d"));
+    contexts.push(document.getElementById("right").getContext("2d"));
+    contexts[0].bgColor = "#CCCCFF";
+    contexts[1].bgColor = "#FFCCCC";
+    contexts[0].targetPlayer = players[0];
+    contexts[1].targetPlayer = players[1];
 
     window.onkeydown = event_keydown;
-    lcanvas.onmousedown = event_mdown;
-    rcanvas.onmousedown = event_mdown;
+    contexts.forEach(function(ctx) {
+        ctx.canvas.onmousedown = event_mdown;
+    });
+
+    candies.push(new Candy(generate_random_vertex()));
+    candies.push(new Candy(generate_random_vertex()));
+    candies.push(new Candy(generate_random_vertex()));
 
     onResize();
     init_debug_flags();
@@ -322,6 +325,7 @@ function Player() {
     this.radius = 10;
     this.keyLeft;
     this.keyRight;
+    this.color = 0;
     this.speedMultiplier = 12.0;
     this.speedOffset = 0.0;
     this.trail_timer = 0;
@@ -370,10 +374,9 @@ function Player() {
         var dx = trajectory_dx[newTrajectory];
         var dy = trajectory_dy[newTrajectory];
         this.endVertex = this.endVertex.plus(new Point(dx, dy));
-        //TODO How do we make sure to wrap the whole path properly. Joe probably already solved it in wrap_path but I am le tired.
         wrapPath(this.startVertex, this.endVertex);
         this.step(-1); //Reset percent_travelled and set new coords
-        if (this == p1) log('player1 at ' + this.startVertex + ' screen ' + this.screenCoord);
+        if (this == players[0]) log('player1 at ' + this.startVertex + ' screen ' + this.screenCoord);
     };
     this.step = function(pct) {
         //Call this every frame to update player's position
@@ -471,13 +474,14 @@ function getPathAngle(line) {
     }
 }
 
-function setupTransform(player, ctx) {
+function setupTransform(ctx) {
     //center view
     ctx.scale(1, -1); //Invert y-axis
-    ctx.translate(lcanvas.width / 2, -lcanvas.height / 2); //ok because lcanvas and rcanvas dimensions are equal
-
+    ctx.translate(ctx.canvas.width / 2, -ctx.canvas.height / 2);
+    
     //track the player
-    if (DEBUG_FLAGS.tracking) {
+    var player = ctx.targetPlayer;
+    if (DEBUG_FLAGS.tracking && player) {
         var pos = player.screenCoord;
         ctx.translate(-pos.x, -pos.y);
     }
@@ -526,14 +530,14 @@ function renderBG(context) {
 function renderTriangleGrid(context) {
     // Fills screen with grid of trianges, rendering every triangle individually.
     //This is inefficient if just drawing lines, but might be useful for some effects.
-    var row_max = lcanvas.height / tri_height -2;
-    var col_max = lcanvas.width / half_edge_len -2;
+    var row_max = context.canvas.height / tri_height -2;
+    var col_max = context.canvas.width / half_edge_len -2;
     
     context.save();
     
-    context.translate(-edge_len * Math.round(lcanvas.width / (2 * edge_len)),
-                      -tri_height * Math.floor(lcanvas.height / (2 * tri_height)));
-    var start_orient = Math.floor(lcanvas.height / (2 * tri_height)) % 2;
+    context.translate(-edge_len * Math.round(context.canvas.width / (2 * edge_len)),
+                      -tri_height * Math.floor(context.canvas.height / (2 * tri_height)));
+    var start_orient = Math.floor(context.canvas.height / (2 * tri_height)) % 2;
     context.beginPath();
     context.lineWidth = 1;
     
@@ -638,6 +642,7 @@ function renderTrianglesWithinRhombus(context) {
 
 function renderPlayer(player, context) {
     var pos = player.screenCoord;
+    context.strokeStyle = player.color;
     context.translate(pos.x, pos.y);
     //context.rotate(-Math.PI / 4);
     context.rotate((4*Math.PI*player.trajectory - 3*Math.PI) / 12);
@@ -682,14 +687,19 @@ function renderParticles(context) {
     context.globalAlpha = 1.0;
 }
 
-function renderClear() {
-    lctx.resetTransform();
-    rctx.resetTransform();
+function renderCandies(ctx) {
+    ctx.strokeStyle = "#009900";
+    candies.forEach(function (candy) {
+        var p = toScreenSpace(new Point(candy.x, candy.y));
+        ctx.strokeRect(p.x - 10, p.y - 10, 20, 20);
+    });
+}
 
-    lctx.fillStyle = "#CCCCFF";
-    lctx.fillRect(0, 0, lcanvas.width, lcanvas.height);
-    rctx.fillStyle = "#FFCCCC";
-    rctx.fillRect(0, 0, rcanvas.width, rcanvas.height);
+function renderClear(ctx) {
+    ctx.resetTransform();
+    
+    ctx.fillStyle = ctx.bgColor;
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 }
 
 function renderTiledGame() {
@@ -717,95 +727,48 @@ function renderTiledGame() {
         , [dx, 0]
         , [dx, 0]];
         
-    renderClear();
-    setupTransform(p1, lctx);
-    setupTransform(p2, rctx);
-
-    positions.forEach(function (pos) {
-        lctx.save();
-        rctx.save();
-        lctx.translate(pos[0], pos[1]);
-        rctx.translate(pos[0], pos[1]);
-
-        lctx.lineWidth = 1;
-        lctx.strokeStyle = "#000000";
-        renderBG(lctx);
-        rctx.lineWidth = 1;
-        rctx.strokeStyle = "#000000";
-        renderBG(rctx);
-
-        lctx.lineWidth = 5;
-        lctx.strokeStyle = "#FF0000";
-        renderPlayer(p2, lctx);
-        lctx.strokeStyle = "#0000FF";
-        renderPlayer(p1, lctx);
-
-        rctx.lineWidth = 5;
-        rctx.strokeStyle = "#0000FF";
-        renderPlayer(p1, rctx);
-        rctx.strokeStyle = "#FF0000";
-        renderPlayer(p2, rctx);
-        
-        renderCandies(rctx);
-        renderCandies(lctx);
-        renderWalls(rctx);
-        renderWalls(lctx);
-
-        lctx.restore();
-        rctx.restore();
-    });
-
-    lctx.lineWidth = 5;
-    rctx.lineWidth = 5;
-    lctx.strokeStyle = "#009900";
-    rctx.strokeStyle = "#009900";
-    lctx.strokeRect(testPoint.x - 5, testPoint.y - 5, 10, 10);
-    rctx.strokeRect(testPoint.x - 5, testPoint.y - 5, 10, 10);
-}
-
-function renderCandies(ctx) {
-    ctx.strokeStyle = "#009900";
-    candies.forEach(function (candy) {
-        var p = toScreenSpace(new Point(candy.x, candy.y));
-        ctx.strokeRect(p.x - 10, p.y - 10, 20, 20);
+    contexts.forEach(function (ctx) {
+        renderClear(ctx);
+        setupTransform(ctx);
+        positions.forEach(function (pos) {
+            ctx.save();
+            ctx.translate(pos[0], pos[1]);
+            renderGameInContext(ctx);
+            ctx.restore();
+        });
     });
 }
-
 function renderGame() {
-    renderClear();
-    setupTransform(p1, lctx);
-    setupTransform(p2, rctx);
+    contexts.forEach(function (ctx) {
+        renderClear(ctx);
+        setupTransform(ctx);
+        renderGameInContext(ctx);
+    });
+}
 
-    lctx.lineWidth = 1;
-    lctx.strokeStyle = "#000000";
-    renderBG(lctx);
-    rctx.lineWidth = 1;
-    rctx.strokeStyle = "#000000";
-    renderBG(rctx);
+function renderGameInContext(ctx) {
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "#000000";
+    renderBG(ctx);
 
-    lctx.lineWidth = 5;
-    lctx.strokeStyle = "#FF0000";
-    renderPlayer(p2, lctx);
-    lctx.strokeStyle = "#0000FF";
-    renderPlayer(p1, lctx);
+    ctx.lineWidth = 5;
+    //Player who is primary in this context should be drawn last (always on top)
+    var primaryPlayer = ctx.targetPlayer;
+    players.forEach(function (p) {
+        if (p != primaryPlayer) {
+            renderPlayer(p, ctx);
+        }
+    });
+    if (primaryPlayer) {
+        renderPlayer(primaryPlayer, ctx);
+    }
 
-    rctx.lineWidth = 5;
-    rctx.strokeStyle = "#0000FF";
-    renderPlayer(p1, rctx);
-    rctx.strokeStyle = "#FF0000";
-    renderPlayer(p2, rctx);
+    ctx.strokeStyle = "#009900";
+    ctx.strokeRect(testPoint.x - 5, testPoint.y - 5, 10, 10);
 
-    lctx.strokeStyle = "#009900";
-    rctx.strokeStyle = "#009900";
-    lctx.strokeRect(testPoint.x - 5, testPoint.y - 5, 10, 10);
-    rctx.strokeRect(testPoint.x - 5, testPoint.y - 5, 10, 10);
-
-    renderCandies(rctx);
-    renderCandies(lctx);
-    renderWalls(rctx);
-    renderWalls(lctx);
-    renderParticles(rctx);
-    renderParticles(lctx);
+    renderCandies(ctx);
+    renderWalls(ctx);
+    renderParticles(ctx);
 }
 
 function step(time = 50) {
@@ -830,12 +793,12 @@ function snap_to_tri_grid(point) {
 }
 
 function event_mdown(mouseEvent) {
-    testPoint = mouseEvent_to_world(mouseEvent, rcanvas);
-    if (tracking) {
-        if (mouseEvent.clientX >= rcanvas.offsetLeft) {
-            testPoint = testPoint.plus(p2.screenCoord);
+    testPoint = mouseEvent_to_world(mouseEvent, contexts[1].canvas);
+    if (DEBUG_FLAGS.tracking) {
+        if (mouseEvent.clientX >= contexts[1].canvas.offsetLeft) {
+            testPoint = testPoint.plus(contexts[1].targetPlayer.screenCoord);
         } else {
-            testPoint = testPoint.plus(p1.screenCoord);
+            testPoint = testPoint.plus(contexts[0].targetPlayer.screenCoord);
         }
     }
     candies.push(new Candy(wrapPoint(toNearestGridPoint(testPoint))));
@@ -853,84 +816,20 @@ function event_keydown(event) {
     else if (c === 'Y') {
         DEBUG_FLAGS.tiling = !DEBUG_FLAGS.tiling;
     }
-
-    //a=65; d=68; <=37; >=39;
-    else if (p1.keyPress(event.keyCode)) {
-        log('p1 handled key ' + c);
-    }
-    else if (p2.keyPress(event.keyCode)) {
-        log('p2 handled key ' + c);
+    //Check if players handle keypress
+    else {
+        for(let i = 0; i < players.length; i++) {
+            if (players[i].keyPress(event.keyCode)) break;
+        }
     }
 }
 
-function wrap_path(path) {
-    var st = Math.sin(Math.PI / 3); //sin theta
-    var ct = Math.cos(Math.PI / 3); //cos theta
-    var tempx;
-    var tempy;
-    var i;
-    var epsilon = 5;
-    
-    //Only check in the y direction 'cause it's easy.
-    //  rotate by pi/3 rads to align hex edges
-    for (i = 0; i < 3; i += 1) {    
-        if (path.end.y > r + epsilon) {
-            path.end.y -= r * 2;
-            path.start.y -= r * 2;
-        } else if (path.end.y < -r - epsilon) {
-            path.end.y += r * 2;
-            path.start.y += r * 2;
-        }
-        tempx = path.end.x * ct - path.end.y * st;
-        tempy = path.end.x * st + path.end.y * ct;
-        path.end.x = tempx;
-        path.end.y = tempy;
-        tempx = path.start.x * ct - path.start.y * st;
-        tempy = path.start.x * st + path.start.y * ct;
-        path.start.x = tempx;
-        path.start.y = tempy;
-    }
-    //the points are rotated pi rads now. Rotate them back!
-    path.end.x = -path.end.x;
-    path.end.y = -path.end.y;
-    path.start.x = -path.start.x;
-    path.start.y = -path.start.y;
-
-    snap_to_tri_grid(path.start);
-    snap_to_tri_grid(path.end);
-}
-
-function wrap_point(p) {
-    var st = Math.sin(Math.PI / 3); //sin theta
-    var ct = Math.cos(Math.PI / 3); //cos theta
-    var tempx;
-    var tempy;
-    var i;
-    var epsilon = 5;
-    
-    //Only check in the y direction 'cause it's easy.
-    //  rotate by pi/3 rads to align hex edges
-    for (i = 0; i < 3; i += 1) {    
-        if (p.y > r + epsilon) {
-            p.y -= r * 2;
-        } else if (p.y < -r - epsilon) {
-            p.y += r * 2;
-        }
-        tempx = p.x * ct - p.y * st;
-        tempy = p.x * st + p.y * ct;
-        p.x = tempx;
-        p.y = tempy;
-    }
-    //the points are rotated pi rads now. Rotate them back!
-    p.x = -p.x;
-    p.y = -p.y;
-    snap_to_tri_grid(p);
+function randomInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 function generate_random_vertex() {
-    var vtx = new Point(Math.random() * r * 2, Math.random() * r * 2);
-    snap_to_tri_grid(vtx);
-    wrap_point(vtx);
+    var vtx = new Point(randomInt(0, grid_max_x-1), randomInt(0, grid_max_y-1));
     return vtx;
 }
 
@@ -962,7 +861,7 @@ function update_player(player, delta) {
     var turnLeft = false;
     var turnRight = false;
     var ignoringParallel = false;
-    var pd = player.trajectory; //getPathAngle(player.path); // player direction
+    var pd = player.trajectory; // player direction
     
     var leftWall = (pd + 1) % 3; //This wall orientation # will bounce player left
     var rightWall = (pd + 2) % 3;
@@ -970,7 +869,6 @@ function update_player(player, delta) {
     var pos = wrapPoint(player.endVertex.clone());
     walls.forEach(function (wall) {
         if (pos.x == wall.x && pos.y == wall.y) {
-        //(new Line(player.path.end.x, player.path.end.y, wall.x, wall.y).length < 10) {
             var o = wall.orientation;
             turnLeft |= (o == leftWall);
             turnRight|= (o == rightWall);
@@ -993,36 +891,6 @@ function update_player(player, delta) {
     }
     if (pd >= 6) pd -= 6;
     player.setTrajectory(pd);
-    /*
-    if (turnRight ^ turnLeft) {
-        //find path ray end-start
-        var ray = player.path.end.minus(player.path.start);
-        //rotate path 2pi/3 rad
-        var angle = 2 * Math.PI/3;
-        if (turnRight) angle = -angle;
-        var ct = Math.cos(angle);
-        var st = Math.sin(angle);
-        var tempx = ray.x * ct - ray.y * st;
-        var tempy = ray.x * st + ray.y * ct;
-        ray.x = tempx;
-        ray.y = tempy;
-        //add ray to path end
-        ray = ray.plus(player.path.end);
-        //new path is end to ray.
-        snap_to_tri_grid(ray);
-        player.path = new Line(player.path.end.x, player.path.end.y, ray.x, ray.y);
-        wrap_path(player.path);
-    } else if (turnRight && turnLeft) {    //Turn around
-        var tmp = player.path.start;
-        player.path.start = player.path.end;
-        player.path.end = tmp;
-    } else {        //Keep going straight
-        var newEnd = player.path.end.plus(player.path.end.minus(player.path.start));
-        snap_to_tri_grid(newEnd);
-        player.path = new Line(player.path.end.x, player.path.end.y, newEnd.x, newEnd.y);
-        wrap_path(player.path);
-    }
-    */
     Object.keys(player.effects).forEach(function (effect) {
         //effect is a key in the player.effects dictionary
         player.effects[effect] -= 1;
@@ -1068,11 +936,10 @@ function collide_candies(player) {
 }
 
 function physics(delta) {
-    collide_candies(p1);
-    collide_candies(p2);
-
-    update_player(p1, delta);
-    update_player(p2, delta);
+    players.forEach(collide_candies);
+    players.forEach(function (p) {
+        update_player(p, delta);
+    });
     
     update_walls(delta);
 
