@@ -68,11 +68,14 @@ const e = 100; //triangle height; should evenly divide `r`
 const s = r * Math.tan(Math.PI/6); //half of a side length (for larger game hexagon)
 const t = 2*s*e / r; //triangle edge length
 
+//Note: Optional keybinding char and underscore are chopped off during init_debug_flags()
 let DEBUG_FLAGS = {
-    'tracking': false,
-    'tiling': false,
-    'paused': false,
-    'path_markers': true,
+    't_tracking': false,
+    'y_tiling': false,
+    'p_paused': false,
+    'm_path_markers': true,
+    'b_world_border': true,
+    'h_hilarious_debug': false,
 }
 
 var time_old = -1;
@@ -140,10 +143,12 @@ function init() {
     var p1 = new Player();
     p1.keyLeft = 'A'.charCodeAt();  //a=65; d=68;
     p1.keyRight = 'D'.charCodeAt();
+    p1.keyForward = 'W'.charCodeAt();
     p1.color = "#0000FF";
     var p2 = new Player();
     p2.keyLeft = KEY_CODE.Arrow_Left;  //<=37; >=39;
     p2.keyRight = KEY_CODE.Arrow_Right;
+    p2.keyForward = KEY_CODE.Arrow_Up;
     p2.color = "#FF0000";
     p_default = new Player();
     p1.endVertex = new Point(-2, 0);
@@ -178,7 +183,24 @@ function init() {
 }
 
 function init_debug_flags() {
-    let box = document.getElementById("flaglist")
+    //Extract keybindings
+    let keybinds = {};
+    let dbgFlags = {};
+    Object.keys(DEBUG_FLAGS).forEach(function (f) {
+        let dbgName = f;
+        if (f.length > 2 && f[1] == '_') {
+            dbgName = dbgName.substr(2);
+            dbgFlags[dbgName] = DEBUG_FLAGS[f];
+            keybinds[dbgName] = f[0].toUpperCase();
+        } else {
+            dbgFlags[dbgName] = DEBUG_FLAGS[f];
+        }
+    });
+    //Overwrite DEBUG_FLAGS with keybindings removed from names
+    DEBUG_FLAGS = dbgFlags;
+    
+    //Create html checkboxes to interact with DEBUG_FLAGS
+    let box = document.getElementById("flaglist");
     Object.keys(DEBUG_FLAGS).forEach(function (f) {
         let div = document.createElement("div");
         let label = document.createElement("label");
@@ -191,10 +213,16 @@ function init_debug_flags() {
         }
         div.className = "item";
         label.appendChild(input);
-        label.appendChild(document.createTextNode(f));
+        if (keybinds[f]) {
+            label.appendChild(document.createTextNode('(' + keybinds[f] + ') ' + f));
+        } else {
+            label.appendChild(document.createTextNode(f));
+        }
         div.appendChild(label);
         box.appendChild(div);
     });
+    
+    DEBUG_FLAGS.keybinds = keybinds;
 }
 
 function init_board() {
@@ -325,6 +353,7 @@ function Player() {
     this.radius = 10;
     this.keyLeft;
     this.keyRight;
+    this.keyForward;
     this.color = 0;
     this.speedMultiplier = 12.0;
     this.speedOffset = 0.0;
@@ -333,6 +362,7 @@ function Player() {
     //this.path = new Line(-2 * s, 0, 2 * s, 0);
     this.effects = {};
     this.effectsQueue = [];
+    this.universe = TriangleUniverse;
     this.setPos = function(newPos) {
         var tempPos = newPos;
         tempPos *= this.speedMultiplier;
@@ -349,10 +379,15 @@ function Player() {
         var direction = 0;
         if (key === this.keyLeft) direction = 1;
         if (key === this.keyRight) direction = -1;
+        if (key === this.keyForward) direction = 2;
         if (!direction) return false; //Keypress not handled
-        
-        //Path angle is either +1 to left or -1 to right. +2 is like -1 but without risk of going negative
-        var pa = (this.trajectory + ((direction == 1) ? 1 : 2)) % 3;
+        var pa;
+        if (direction == 2) {
+            pa = this.trajectory % 3;
+        } else {
+            //Path angle is either +1 to left or -1 to right. +2 is like -1 but without risk of going negative
+            pa = (this.trajectory + ((direction == 1) ? 1 : 2)) % 3;
+        }
         //Wrap in case endVertex is on grid_max
         var wp = wrapPoint(this.endVertex.clone());
         walls.push(new Wall(wp, pa));
@@ -366,26 +401,48 @@ function Player() {
     this.percent_travelled = 0;    //How far player is between startVertex (0) and endVertex (1)
     this.gridCoord;                //Current player coordinates, in grid space
     this.screenCoord;              //Current player coordinates, in screen space
+    //TODO: Decide if setTrajectory should even be here
     this.setTrajectory = function(newTrajectory) {
-        this.trajectory = newTrajectory;
-        this.startVertex = this.endVertex;
-        var trajectory_dx = [1, 0, -1, -1,  0,  1];
-        var trajectory_dy = [0, 1,  1,  0, -1, -1];
-        var dx = trajectory_dx[newTrajectory];
-        var dy = trajectory_dy[newTrajectory];
-        this.endVertex = this.endVertex.plus(new Point(dx, dy));
-        wrapPath(this.startVertex, this.endVertex);
-        this.step(-1); //Reset percent_travelled and set new coords
-        if (this == players[0]) log('player1 at ' + this.startVertex + ' screen ' + this.screenCoord);
+        //Call this when you're at a vertex and you know which direction the player should go
+        this.universe.setPlayerTrajectory(this, newTrajectory);
     };
     this.step = function(pct) {
         //Call this every frame to update player's position
-        //Step forward pct% of an edge length
-        this.percent_travelled += pct;
-        this.gridCoord = this.startVertex.lerp(this.endVertex, this.percent_travelled);
-        this.screenCoord = toScreenSpace(this.gridCoord);
-    }
+        this.universe.playerStep(this, pct);
+    };
+    this.resolveVertex = function() {
+        //Call this when player has reached or passed a vertex
+        this.universe.onPlayerAtVertex(this);
+    };
+    this.transitionToUniverse = function(uni) {
+        this.toUniverse = uni;
+        this.universeTransitionPct = 0;
+        uni.transitionTo(this);
+    };
+}
+
+function trajectoryToVector(t) {
+    //  2    1
+    //   \  /
+    // 3 -  - 0
+    //   /  \
+    //  4    5
+    var trajectory_dx = [1, 0, -1, -1,  0,  1];
+    var trajectory_dy = [0, 1,  1,  0, -1, -1];
+    var dx = trajectory_dx[t];
+    var dy = trajectory_dy[t];
+    return new Point(dx, dy);
+}
+
+function vectorToTrajectory(v) {
+    //v should be a Point of which x and y are -1, 0, or 1, and x and y are not equal
+    var trajectory_dx = [1, 0, -1, -1,  0,  1];
+    var trajectory_dy = [0, 1,  1,  0, -1, -1];
     
+    for (var i = 0; i < 6; i++) {
+        if (trajectory_dx[i] == v.x && trajectory_dy[i] == v.y)
+            return i;
+    }
 }
 
 function Particle(x, y, lifespan, radius, easeInTime, easeOutTime) {
@@ -446,6 +503,16 @@ function wrapPoint(p) {
     return p;
 }
 
+function wrapClosestTo(p, target) {
+    //In grid space. Return wrapped point p closest to target. Might be outside of rhombus boundary.
+    var pWrap = p.clone();
+    while (pWrap.x - target.x > grid_max_x/2) pWrap.x -= grid_max_x;
+    while (pWrap.x - target.x < -grid_max_x/2) pWrap.x += grid_max_x;
+    while (pWrap.y - target.y > grid_max_y/2) pWrap.y -= grid_max_y;
+    while (pWrap.y - target.y < -grid_max_y/2) pWrap.y += grid_max_y;
+    return pWrap;
+}
+
 function getPathAngleIgnoreDirection(line) {
     var result = getPathAngle(line);
     return (result > 2) ? result - 3 : result;
@@ -484,21 +551,33 @@ function setupTransform(ctx) {
     if (DEBUG_FLAGS.tracking && player) {
         var pos = player.screenCoord;
         ctx.translate(-pos.x, -pos.y);
+    } else { //Center the rhombus
+        var mid = toScreenSpace(new Point(grid_max_x/2, grid_max_y/2));
+        ctx.translate(-mid.x, -mid.y);
     }
 }
 
 function renderBG(context) {
-    var a;
-    var w;
     context.save();
     context.beginPath();
     
-    //@TEST CODE
-    //renderTriangleGrid(context);
-    renderRhombusBorder(context);
-    renderTrianglesWithinRhombus(context);
+    if (DEBUG_FLAGS.world_border) {
+        renderRhombusBorder(context);
+    }
+    var player = context.targetPlayer;
+    if (player) {
+        if (player.toUniverse) {
+            player.universe.renderBGTransition(context, player.toUniverse, player.universeTransitionPct);
+        } else {
+            player.universe.renderBG(context);
+        }
+    } else { //Default rendering for a context with no player associated
+        TriangleUniverse.renderBG(context);
+    }
     
     return;
+    var a;
+    var w;
     //Draw Hexagon
     context.lineWidth = 1;
     //draw horizontal lines
@@ -526,57 +605,6 @@ function renderBG(context) {
     context.restore();
 }
 
-//@EXPERIMENTAL
-function renderTriangleGrid(context) {
-    // Fills screen with grid of trianges, rendering every triangle individually.
-    //This is inefficient if just drawing lines, but might be useful for some effects.
-    var row_max = context.canvas.height / tri_height -2;
-    var col_max = context.canvas.width / half_edge_len -2;
-    
-    context.save();
-    
-    context.translate(-edge_len * Math.round(context.canvas.width / (2 * edge_len)),
-                      -tri_height * Math.floor(context.canvas.height / (2 * tri_height)));
-    var start_orient = Math.floor(context.canvas.height / (2 * tri_height)) % 2;
-    context.beginPath();
-    context.lineWidth = 1;
-    
-    var y1 = 0;
-    var y2 = 0;
-    for(var tri_row = 0; tri_row < row_max; tri_row++) {
-        var uporient = tri_row & 1;
-        if (!start_orient) uporient = !uporient;
-        y1 = y2;
-        y2 += tri_height;
-
-        var x1 = -half_edge_len;
-        var x2 = x1 + half_edge_len;
-        var x3 = x2 + half_edge_len;
-        for(var tri_col = 0; tri_col < col_max; tri_col++) {
-            x1 = x2;
-            x2 = x3;
-            x3 += half_edge_len;
-            if (uporient) {
-                //draw triangle with pointy top
-                context.moveTo(x1, y1);
-                context.lineTo(x2, y2);
-                context.lineTo(x3, y1);
-                context.lineTo(x1, y1);
-            } else {
-                //draw triangle with pointy bottom
-                context.moveTo(x1, y2);
-                context.lineTo(x3, y2);
-                context.lineTo(x2, y1);
-                context.lineTo(x1, y2);
-            }
-            uporient = !uporient;
-        }
-    }
-    
-    context.stroke();
-    context.restore();
-}
-
 function renderRhombusBorder(context) {
     context.save();
     context.beginPath();
@@ -597,47 +625,306 @@ function renderRhombusBorder(context) {
     context.restore();
 }
 
-function renderTrianglesWithinRhombus(context) {
-    context.save();
-    context.beginPath();
-    
-    var bottomLeft = toScreenSpace(new Point(0,0));
-    var y1 = 0;
-    var y2 = bottomLeft.y;
-    var xStart = bottomLeft.x;
-    for(var row = 0; row < grid_max_y; row++) {
-        //For a right-leaning rhombus, every row starts with an up-oriented triangle
-        //and ends with a down-oriented triangle
-        var uporient = true;
-        y1 = y2;
-        y2 = y1 + tri_height;
-        var x1 = xStart - half_edge_len;
-        var x2 = x1 + half_edge_len;
-        var x3 = x2 + half_edge_len;
-        for(var col = 0; col < 2*grid_max_x; col++) {
-            x1 = x2;
-            x2 = x3;
-            x3 += half_edge_len;
-            if (uporient) {
-                //draw triangle with pointy top
-                context.moveTo(x1, y1);
-                context.lineTo(x2, y2);
-                context.lineTo(x3, y1);
-                context.lineTo(x1, y1);
-            } else {
-                //draw triangle with pointy bottom
-                context.moveTo(x1, y2);
-                context.lineTo(x3, y2);
-                context.lineTo(x2, y1);
-                context.lineTo(x1, y2);
+const TriangleUniverse = {
+    renderBG: function(context) {
+        context.save();
+        context.beginPath();
+        
+        var bottomLeft = toScreenSpace(new Point(0,0));
+        var y1 = 0;
+        var y2 = bottomLeft.y;
+        var xStart = bottomLeft.x;
+        for(var row = 0; row < grid_max_y; row++) {
+            //For a right-leaning rhombus, every row starts with an up-oriented triangle
+            //and ends with a down-oriented triangle
+            var uporient = true;
+            y1 = y2;
+            y2 = y1 + tri_height;
+            var x1 = xStart - half_edge_len;
+            var x2 = x1 + half_edge_len;
+            var x3 = x2 + half_edge_len;
+            for(var col = 0; col < 2*grid_max_x; col++) {
+                x1 = x2;
+                x2 = x3;
+                x3 += half_edge_len;
+                
+                if (uporient) {
+                    //draw triangle with pointy top
+                    context.moveTo(x1, y1);
+                    context.lineTo(x2, y2);
+                    context.lineTo(x3, y1);
+                    context.lineTo(x1, y1);
+                } else {
+                    //draw triangle with pointy bottom
+                    context.moveTo(x1, y2);
+                    context.lineTo(x3, y2);
+                    context.lineTo(x2, y1);
+                    context.lineTo(x1, y2);
+                }
+                uporient = !uporient;
             }
-            uporient = !uporient;
+            xStart += half_edge_len
         }
-        xStart += half_edge_len
-    }
+        
+        context.stroke();
+        context.restore();
+    },
     
-    context.stroke();
-    context.restore();
+    renderBGTransition: function(context, toUniverse, pct) {
+        if (toUniverse === FlowerUniverse) {
+            toUniverse.renderBGTransition(context, this, 1-pct);
+        } else {
+            this.renderBG(context);
+        }
+    },
+    
+    playerStep: function(player, pct) {
+        //Step forward pct% of an edge length
+        player.percent_travelled += pct;
+        player.gridCoord = player.startVertex.lerp(player.endVertex, player.percent_travelled);
+        player.screenCoord = toScreenSpace(player.gridCoord);
+    },
+    
+    onPlayerAtVertex: function(player) {
+        //Player has reached (or passed) endVertex
+        
+        //Look for walls at this vertex
+        
+        // 4 2    1 2
+        //    \  /
+        //8 3 -  - 0  1
+        //    /  \
+        //16 4    5 32
+        var turnLeft = false;
+        var turnRight = false;
+        var ignoringParallel = false;
+        var pd = player.trajectory; // player direction
+        
+        var leftWall = (pd + 1) % 3; //This wall orientation # will bounce player left
+        var rightWall = (pd + 2) % 3;
+        var parallelWall = pd % 3;
+        var pos = wrapPoint(player.endVertex.clone());
+        walls.forEach(function (wall) {
+            if (pos.x == wall.x && pos.y == wall.y) {
+                var o = wall.orientation;
+                turnLeft |= (o == leftWall);
+                turnRight|= (o == rightWall);
+                ignoringParallel |= (o == parallelWall);
+            }
+        });
+        if (turnRight && turnLeft) {
+                //Turn around
+                log('turn around');
+                pd += 3;
+        } else if (turnRight) {
+            //Turn Right
+            log('turn right');
+            pd += 4; //Same as -2 in mod 6
+        } else if (turnLeft) {
+            //Turn Left
+            log('turn left');
+            pd += 2;
+        }
+        if (pd >= 6) pd -= 6;
+        player.setTrajectory(pd);
+    },
+    
+    setPlayerTrajectory: function(player, newTrajectory) {
+        player.trajectory = newTrajectory;
+        player.startVertex = player.endVertex;
+        var traj = trajectoryToVector(newTrajectory);
+        player.endVertex = player.endVertex.plus(traj);
+        wrapPath(player.startVertex, player.endVertex);
+        player.step(-1); //Reset percent_travelled and set new coords
+        //if (player == players[0]) log('player1 at ' + player.startVertex + ' screen ' + player.screenCoord);
+    },
+    
+    transitionTo: function(player) {
+        log("Player transitioning to Triangle Universe.");
+    }
+};
+Object.freeze(TriangleUniverse);
+
+const FlowerUniverse = {
+    renderBG: function(context, radius = edge_len) {
+        context.save();
+        context.beginPath();
+        
+        var bottomLeft = toScreenSpace(new Point(0,0));
+        var y1 = 0;
+        var y2 = bottomLeft.y;
+        var xStart = bottomLeft.x;
+        for(var row = 0; row < grid_max_y; row++) {
+            //For a right-leaning rhombus, every row starts with an up-oriented triangle
+            //and ends with a down-oriented triangle
+            var uporient = true;
+            y1 = y2;
+            y2 = y1 + tri_height;
+            var x1 = xStart - half_edge_len;
+            var x2 = x1 + half_edge_len;
+            var x3 = x2 + half_edge_len;
+            for(var col = 0; col < 2*grid_max_x; col++) {
+                x1 = x2;
+                x2 = x3;
+                x3 += half_edge_len;
+                
+                if (uporient) {
+                    drawArc(x2, y2, x1, y1, radius, context);
+                    drawArc(x3, y1, x2, y2, radius, context);
+                    drawArc(x1, y1, x3, y1, radius, context);
+                } else {
+                    drawArc(x3, y2, x1, y2, radius, context);
+                    drawArc(x2, y1, x3, y2, radius, context);
+                    drawArc(x1, y2, x2, y1, radius, context);
+                }
+                uporient = !uporient;
+            }
+            xStart += half_edge_len
+        }
+        
+        context.stroke();
+        context.restore();
+    },
+    
+    renderBGTransition: function(context, toUniverse, pct) {
+        if (toUniverse === TriangleUniverse) {
+            var radius = edge_len / Math.clamp(1 - pct, .01, 1);
+            this.renderBG(context, radius);
+        } else {
+            this.renderBG(context);
+        }
+    },
+    
+    playerStep: function(player, pct) {
+        //Step forward pct% over a 60deg arc
+        player.percent_travelled += pct;
+        var orbitVertex = wrapClosestTo(player.orbitVertex, player.startVertex);
+        var startTraj = vectorToTrajectory(player.startVertex.minus(orbitVertex));
+        var endTraj   = vectorToTrajectory(player.endVertex.minus(orbitVertex));
+        //0deg and 360deg are equivalent, so make sure we use the right value to lerp between
+        if (startTraj == 0 && endTraj == 5) startTraj = 6;
+        if (startTraj == 5 && endTraj == 0) endTraj = 6;
+            
+        var lerpRadians = Math.PI / 3 * (startTraj + (endTraj - startTraj) * player.percent_travelled);
+        var s = toScreenSpace(orbitVertex);
+        s.x += Math.cos(lerpRadians) * edge_len;
+        s.y += Math.sin(lerpRadians) * edge_len;
+        player.screenCoord = s;
+        player.gridCoord = wrapPoint(toGridSpace(player.screenCoord));
+    },
+    
+    onPlayerAtVertex: function(player) {
+        //Player has reached (or passed) endVertex
+        
+        //Look for walls at this vertex
+        
+        //   2    1
+        //    \  /
+        //  3 -  - 0
+        //    /  \
+        //   4    5
+        var turnLeft = false;
+        var turnRight = false;
+        var turnParallel = false;
+        var pd = player.trajectory; // player direction
+        
+        var leftWall = (pd + 1) % 3; //This wall orientation # will bounce player left
+        var rightWall = (pd + 2) % 3;
+        var parallelWall = pd % 3;
+        var pos = wrapPoint(player.endVertex.clone());
+        walls.forEach(function (wall) {
+            if (pos.x == wall.x && pos.y == wall.y) {
+                var o = wall.orientation;
+                turnLeft |= (o == leftWall);
+                turnRight|= (o == rightWall);
+                turnParallel |= (o == parallelWall);
+            }
+        });
+        if (turnRight && turnLeft) {
+            //Turn around
+            log('turn around');
+            player.orbitDirection = -player.orbitDirection; //1=ccw, -1=cw
+            pd += 3;
+        } else if (turnRight) {
+            //Turn Right
+            log('turn right');
+            pd += 4; //Same as -2 in mod 6
+        } else if (turnLeft) {
+            //Turn Left
+            log('turn left');
+            pd += 2;
+        } else if (turnParallel) {
+            //Go straight
+            log('go straight');
+        } else {
+            //Continue orbiting
+            pd += player.orbitDirection;
+        }
+        if (pd >= 6) pd -= 6;
+        player.setTrajectory(pd);
+        //player.setTrajectory((player.trajectory + player.orbitDirection + 6) % 6);
+    },
+    
+    setPlayerTrajectory: function(player, newTrajectory) {
+        player.trajectory = newTrajectory;
+        player.startVertex = player.endVertex;
+        var traj = trajectoryToVector(newTrajectory);
+        player.endVertex = player.endVertex.plus(traj);
+        wrapPath(player.startVertex, player.endVertex);
+        
+        //Compute orbitVertex
+        var t = player.trajectory + player.orbitDirection;
+        if (t < 0) t += 6;
+        if (t > 5) t -= 6;
+        var tv = trajectoryToVector(t);
+        player.orbitVertex = wrapPoint(player.startVertex.plus(tv));
+        
+        player.step(-1); //Reset percent_travelled and set new coords
+        //if (player == players[0]) log('player1 at ' + player.startVertex + ' screen ' + player.screenCoord);
+    },
+    
+    transitionTo: function(player) {
+        log("Player transitioning to Flower Universe.");
+        //Choose an orbit vertex to the right or left
+        //ORRRR maybe just have a boolean for clockwise or CCW rotation
+        //Arbitrarily turn left for now
+        player.orbitDirection = 1; //1=ccw, -1=cw
+        var t = player.trajectory + player.orbitDirection;
+        if (t < 0) t += 6;
+        if (t > 5) t -= 6;
+        var tv = trajectoryToVector(t);
+        player.orbitVertex = wrapPoint(player.endVertex.plus(tv));
+    }
+};
+Object.freeze(FlowerUniverse);
+
+function drawArc(x1, y1, x2, y2, radius, context) {
+    //midpoint
+    var mx = x1 + (x2-x1)/2;
+    var my = y1 + (y2-y1)/2;
+    //(px, py) is perpendicular vector with length equal to p2-p1
+    var px = y2-y1;
+    var py = x1-x2;
+    var d12_sq = px*px + py*py
+    var d12 = Math.sqrt(d12_sq);
+    var padj = Math.sqrt(radius*radius - d12_sq/4);
+    
+    
+    //(cx, cy) is center of arc
+    var cx = mx + px * padj / d12;
+    var cy = my + py * padj / d12;
+    var startAngle = Math.atan2(y1-cy, x1-cx);
+    var endAngle = Math.atan2(y2-cy, x2-cx);
+    
+    if (DEBUG_FLAGS.hilarious_debug) {
+        context.moveTo(mx, my);
+        context.lineTo(cx, cy);
+        context.arc(cx, cy, radius, startAngle, endAngle, true);
+        context.lineTo(cx, cy);
+    } else {
+        context.moveTo(x1, y1);
+        context.arc(cx, cy, radius, startAngle, endAngle, true);
+    }
 }
 
 function renderPlayer(player, context) {
@@ -665,6 +952,12 @@ function renderPlayer(player, context) {
         pos = toScreenSpace(player.endVertex);
         context.arc(pos.x, pos.y, player.radius-5, 0, 2 * Math.PI, false);
         context.stroke();
+        if (player.orbitVertex) {
+            context.beginPath();
+            pos = toScreenSpace(player.orbitVertex);
+            context.arc(pos.x, pos.y, player.radius*2, 0, 2 * Math.PI, false);
+            context.stroke();
+        }
     }
 }
 
@@ -794,12 +1087,14 @@ function snap_to_tri_grid(point) {
 
 function event_mdown(mouseEvent) {
     testPoint = mouseEvent_to_world(mouseEvent, contexts[1].canvas);
-    if (DEBUG_FLAGS.tracking) {
-        if (mouseEvent.clientX >= contexts[1].canvas.offsetLeft) {
+    if (DEBUG_FLAGS.tracking) { //Center on tracked player
+        if (mouseEvent.clientX >= contexts[1].canvas.offsetLeft) { //Clicked right canvas
             testPoint = testPoint.plus(contexts[1].targetPlayer.screenCoord);
-        } else {
+        } else { //Clicked left canvas
             testPoint = testPoint.plus(contexts[0].targetPlayer.screenCoord);
         }
+    } else { //Center on middle of rhombus
+        testPoint = testPoint.minus(toScreenSpace(new Point(grid_max_x/2, grid_max_y/2)));
     }
     candies.push(new Candy(wrapPoint(toNearestGridPoint(testPoint))));
     snap_to_tri_grid(testPoint);
@@ -807,20 +1102,20 @@ function event_mdown(mouseEvent) {
 
 function event_keydown(event) {
     var c = String.fromCharCode(event.keyCode);
-    console.log('keyCode ' + event.keyCode + ', char ' + c);
-    //`t` toggles view tracking
-    if (c === 'T') {
-        DEBUG_FLAGS.tracking = !DEBUG_FLAGS.tracking;
-    }
-    //`y` toggles world tiling
-    else if (c === 'Y') {
-        DEBUG_FLAGS.tiling = !DEBUG_FLAGS.tiling;
-    }
-    //Check if players handle keypress
-    else {
-        for(let i = 0; i < players.length; i++) {
-            if (players[i].keyPress(event.keyCode)) break;
+    //console.log('keyCode ' + event.keyCode + ', char ' + c);
+    
+    //Check if debug flags handle keypress
+    Object.keys(DEBUG_FLAGS.keybinds).forEach(function (k) {
+        if (c === DEBUG_FLAGS.keybinds[k]) {        
+            let chkbox = document.getElementById(k);
+            chkbox.checked = !chkbox.checked;
+            chkbox.onchange();
         }
+    });
+    
+    //Check if players handle keypress
+    for(let i = 0; i < players.length; i++) {
+        if (players[i].keyPress(event.keyCode)) break;
     }
 }
 
@@ -848,49 +1143,10 @@ function update_player(player, delta) {
     }
 
     if (player.percent_travelled < 1) return; //Player is still on current line
+    
     //Player has reached (or passed) endVertex
+    player.resolveVertex();
     
-    //Look for walls at this vertex
-    
-    // 4 2    1 2
-    //    \  /
-    //8 3 -  - 0  1
-    //    /  \
-    //16 4    5 32
-    var wallAngles = 0;
-    var turnLeft = false;
-    var turnRight = false;
-    var ignoringParallel = false;
-    var pd = player.trajectory; // player direction
-    
-    var leftWall = (pd + 1) % 3; //This wall orientation # will bounce player left
-    var rightWall = (pd + 2) % 3;
-    var parallelWall = pd % 3;
-    var pos = wrapPoint(player.endVertex.clone());
-    walls.forEach(function (wall) {
-        if (pos.x == wall.x && pos.y == wall.y) {
-            var o = wall.orientation;
-            turnLeft |= (o == leftWall);
-            turnRight|= (o == rightWall);
-            ignoringParallel |= (o == parallelWall);
-            
-        }
-    });
-    if (turnRight && turnLeft) {
-            //Turn around
-            log('turn around');
-            pd += 3;
-    } else if (turnRight) {
-        //Turn Right
-        log('turn right');
-        pd += 4; //Same as -2 in mod 6
-    } else if (turnLeft) {
-        //Turn Left
-        log('turn left');
-        pd += 2;
-    }
-    if (pd >= 6) pd -= 6;
-    player.setTrajectory(pd);
     Object.keys(player.effects).forEach(function (effect) {
         //effect is a key in the player.effects dictionary
         player.effects[effect] -= 1;
@@ -929,6 +1185,14 @@ function collide_candies(player) {
         //TODO make this test better. maybe only test when player crosses a vertex
         if ((pos.x - candy.x) * (pos.x - candy.x) + (pos.y - candy.y) * (pos.y - candy.y) < .01) {
             player.effectsQueue.push(candy.effect);
+            
+            if (player.universeTransitionPct > 0.9) { //HACK because we are eating candies before reaching the vertex
+                player.universe = player.toUniverse;
+                player.toUniverse = undefined; //Setting to undefined is faster than delete
+                player.universeTransitionPct = undefined;
+            }
+            var newUniverse = (player.universe === TriangleUniverse) ? FlowerUniverse : TriangleUniverse;
+            player.transitionToUniverse(newUniverse);
             return false;
         }
         return true;
@@ -938,6 +1202,15 @@ function collide_candies(player) {
 function physics(delta) {
     players.forEach(collide_candies);
     players.forEach(function (p) {
+        if (p.toUniverse) { //If player is transitioning to new universe
+            //TODO: render never happens at universeTransitionPct == 0, is this a bad thing?
+            p.universeTransitionPct += delta / 835; //TODO: Refactor. 835 is the msPerEdge value in update_player
+            if (p.universeTransitionPct >= 1) { //Done transitioning to new universe
+                p.universe = p.toUniverse;
+                p.toUniverse = undefined; //Setting to undefined is faster than delete
+                p.universeTransitionPct = undefined;
+            }
+        }
         update_player(p, delta);
     });
     
@@ -968,5 +1241,8 @@ function mainloop(timestamp) {
     window.requestAnimationFrame(mainloop);
 }
 
+if (Math.clamp === undefined) {
+    Math.clamp = (num, min, max) => (num <= min) ? min : (num >= max) ? max : num;
+}
 //To save on typing
 var log = console.log;
